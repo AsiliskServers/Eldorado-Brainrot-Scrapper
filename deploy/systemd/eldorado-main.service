@@ -1,0 +1,17 @@
+[Unit]
+Description=Eldorado Brainrot Scraper (Main Node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/gestion/container/scrapper
+EnvironmentFile=/etc/eldorado-scraper/main.env
+ExecStart=/gestion/container/scrapper/.venv/bin/python /gestion/container/scrapper/scripts/run_dashboard.py
+Restart=always
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
