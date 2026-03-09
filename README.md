@@ -1,4 +1,4 @@
-# Eldorado Price Tracker (Scrapling)
+﻿# Eldorado Price Tracker (Scrapling)
 
 Projet de suivi des prix Eldorado (brainrots).
 
@@ -63,7 +63,7 @@ export PORT="30080"
 python scripts/run_dashboard.py
 ```
 
-## Démarrage auto avec systemd (Debian 13)
+## Demarrage auto avec systemd (Debian 13)
 
 Les fichiers systemd sont fournis dans:
 - `deploy/systemd/eldorado-main.service`
@@ -71,28 +71,94 @@ Les fichiers systemd sont fournis dans:
 - `deploy/systemd/main.env.example`
 - `deploy/systemd/satellite.env.example`
 
-### Main (192.168.1.170)
+### Configuration complete (copier/coller)
+
+`/etc/systemd/system/eldorado-main.service`
+
+```ini
+[Unit]
+Description=Eldorado Brainrot Scraper (Main Node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/gestion/container/scrapper
+EnvironmentFile=/etc/eldorado-scraper/main.env
+ExecStart=/gestion/container/scrapper/.venv/bin/python /gestion/container/scrapper/scripts/run_dashboard.py
+Restart=always
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/eldorado-scraper/main.env`
 
 ```bash
-# 1) Installer l'application dans /gestion/container/scrapper et préparer .venv
+NODE_ROLE=main
+HOST=192.168.1.170
+PORT=8787
+SATELLITE_ENABLED=true
+SATELLITE_BASE_URL=http://82.67.180.129:30080
+SATELLITE_TIMEOUT=900
+SCRAPE_TIMEOUT=30
+SCRAPE_IMPERSONATE=chrome
+```
+
+`/etc/systemd/system/eldorado-satellite.service`
+
+```ini
+[Unit]
+Description=Eldorado Brainrot Scraper (Satellite Node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/gestion/container/scrapper
+EnvironmentFile=/etc/eldorado-scraper/satellite.env
+ExecStart=/gestion/container/scrapper/.venv/bin/python /gestion/container/scrapper/scripts/run_dashboard.py
+Restart=always
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/eldorado-scraper/satellite.env`
+
+```bash
+NODE_ROLE=satellite
+HOST=0.0.0.0
+PORT=30080
+SCRAPE_TIMEOUT=30
+SCRAPE_IMPERSONATE=chrome
+```
+
+### Installation systemd - Main (192.168.1.170)
+
+```bash
 cd /gestion/container/scrapper
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
-# 2) Installer les fichiers systemd
 sudo mkdir -p /etc/eldorado-scraper
 sudo cp deploy/systemd/main.env.example /etc/eldorado-scraper/main.env
 sudo cp deploy/systemd/eldorado-main.service /etc/systemd/system/eldorado-main.service
 
-# 3) Activer et démarrer
 sudo systemctl daemon-reload
 sudo systemctl enable --now eldorado-main.service
 sudo systemctl status eldorado-main.service
 ```
 
-### Satellite (82.67.180.129:30080)
+### Installation systemd - Satellite (82.67.180.129:30080)
 
 ```bash
 cd /gestion/container/scrapper
