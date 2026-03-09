@@ -47,6 +47,8 @@ const refs = {
   progressValue: document.getElementById("progressValue"),
   progressBar: document.getElementById("progressBar"),
   progressMeta: document.getElementById("progressMeta"),
+  satelliteHealthBadge: document.getElementById("satelliteHealthBadge"),
+  satelliteStatusText: document.getElementById("satelliteStatusText"),
 };
 
 const SORT_CONTROLS = [
@@ -335,6 +337,12 @@ function resetRowsState() {
   state.sorts = [];
 }
 
+function setSatelliteBadge(text, ok) {
+  refs.satelliteHealthBadge.textContent = text;
+  refs.satelliteHealthBadge.classList.remove("pill-yes", "pill-no");
+  refs.satelliteHealthBadge.classList.add(ok ? "pill-yes" : "pill-no");
+}
+
 function renderScrapeState() {
   const scrape = state.scrapeState || {};
   const running = Boolean(scrape.running);
@@ -364,6 +372,34 @@ function renderScrapeState() {
       refs.progressLabel.textContent = "Aucun scrape en cours";
       refs.progressMeta.textContent = "Pret a lancer un scrape complet (toutes pages, tous prix).";
     }
+  }
+
+  const runtime = scrape.satellite_runtime || {};
+  const satelliteEnabled = Boolean(runtime.enabled);
+  const satelliteOk = runtime.ok === true;
+  const satelliteWorking = Boolean(scrape.satellite_working) || Boolean(runtime.working);
+  const assignedPages = Number(scrape.satellite_assigned_pages || 0);
+  const completedPages = Number(scrape.satellite_completed_pages || 0);
+
+  if (!satelliteEnabled) {
+    setSatelliteBadge("Desactive", false);
+    refs.satelliteStatusText.textContent = "Satellite desactive sur ce noeud.";
+  } else if (satelliteOk) {
+    setSatelliteBadge("OK", true);
+    if (satelliteWorking) {
+      refs.satelliteStatusText.textContent = `Le satellite travaille (${completedPages}/${assignedPages} pages).`;
+    } else {
+      refs.satelliteStatusText.textContent = `Satellite joignable et au repos (${completedPages}/${assignedPages} pages au dernier job).`;
+    }
+  } else {
+    setSatelliteBadge("KO", false);
+    const details = runtime.error ? ` (${runtime.error})` : "";
+    refs.satelliteStatusText.textContent = `Satellite non joignable${details}`;
+  }
+
+  if (scrape.satellite_error) {
+    refs.satelliteStatusText.textContent = `Erreur satellite: ${scrape.satellite_error}`;
+    setSatelliteBadge("KO", false);
   }
 
   if (state.previousRunning && !running) {

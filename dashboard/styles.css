@@ -173,6 +173,22 @@ body {
   transition: width 0.35s ease;
 }
 
+.satellite-box {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.satellite-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
 .stat-card {
   padding: 14px 15px;
   background: var(--card-strong);
