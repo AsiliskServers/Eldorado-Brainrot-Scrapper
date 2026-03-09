@@ -1,0 +1,7 @@
+scrapling==0.4.2
+curl_cffi==0.14.0
+playwright==1.58.0
+browserforge==1.2.4
+apify-fingerprint-datapoints==0.11.0
+msgspec==0.20.0
+anyio==4.12.1

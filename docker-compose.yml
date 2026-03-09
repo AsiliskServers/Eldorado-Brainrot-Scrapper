@@ -1,0 +1,24 @@
+services:
+  eldorado-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eldorado-dashboard
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /app/data
+      SCRAPE_IMPERSONATE: chrome
+      SCRAPE_TIMEOUT: 30
+      LISTING_URL: "https://www.eldorado.gg/fr/steal-a-brainrot-brainrots/i/259?lowestPrice=0&highestPrice=50&offerSortingCriterion=Price&isAscending=true&gamePageOfferIndex=1&gamePageOfferSize=50"
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

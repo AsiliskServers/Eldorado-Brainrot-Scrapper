@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*
+!data/raw/
+!data/raw/.gitkeep
+!data/normalized/
+!data/normalized/.gitkeep
+data_test/
+
+# Local reverse-engineering artifacts
+eldorado_page.html
+eldorado_main.js
+chunk-*.js

@@ -1,0 +1,114 @@
+﻿<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Eldorado Price Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a"></div>
+    <div class="bg-shape bg-shape-b"></div>
+    <main class="layout">
+      <section class="hero card">
+        <div>
+          <p class="eyebrow">Eldorado Monitor</p>
+          <h1>Price board</h1>
+          <p class="subtitle">Suivi live des offres avec mise a jour automatique.</p>
+        </div>
+        <div class="hero-actions">
+          <button id="scrapeButton" class="btn btn-primary">Lancer un scrape</button>
+          <button id="clearButton" class="btn btn-danger">Supprimer les resultats</button>
+          <button id="refreshButton" class="btn btn-ghost">Rafraichir</button>
+        </div>
+      </section>
+
+      <section class="card progress-card">
+        <div class="progress-top">
+          <strong id="progressLabel">Aucun scrape en cours</strong>
+          <span id="progressValue">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <p id="progressMeta" class="hint">Pret a lancer un scrape complet (toutes pages).</p>
+      </section>
+
+      <section class="stats">
+        <article class="card stat-card">
+          <p>Derniere MAJ</p>
+          <h3 id="lastUpdate">-</h3>
+        </article>
+        <article class="card stat-card">
+          <p>Offres chargees</p>
+          <h3 id="offerCount">0</h3>
+        </article>
+        <article class="card stat-card">
+          <p>Prix min</p>
+          <h3 id="minPrice">-</h3>
+        </article>
+        <article class="card stat-card">
+          <p>Prix max</p>
+          <h3 id="maxPrice">-</h3>
+        </article>
+      </section>
+
+      <section class="card panel">
+        <div class="panel-top">
+          <div class="panel-left">
+            <h2>Offres</h2>
+            <div class="filter-groups">
+              <div class="filter-row">
+                <div class="inline-filters">
+                  <label class="filter-inline">
+                    <span>Rarete</span>
+                    <select id="raritySelect" class="filter-select"></select>
+                  </label>
+                  <label class="filter-inline">
+                    <span>Vitesse</span>
+                    <select id="speedSelect" class="filter-select"></select>
+                  </label>
+                  <label class="filter-inline">
+                    <span>Prix</span>
+                    <select id="priceSelect" class="filter-select"></select>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <input id="searchInput" class="search" type="search" placeholder="Filtrer: item, rarete, vendeur, vitesse" />
+        </div>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Titre</th>
+                <th>Item</th>
+                <th>Rarete</th>
+                <th><button id="sortSpeedText" class="th-sort" type="button">Vitesse</button></th>
+                <th><button id="sortPriceText" class="th-sort" type="button">Prix</button></th>
+                <th><button id="sortQuantityText" class="th-sort" type="button">Quantite</button></th>
+                <th>Vendeur</th>
+                <th>Score</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="offersTbody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span id="offersRange" class="hint">0-0 / 0</span>
+          <div class="pager-actions">
+            <button id="prevPageButton" class="btn btn-ghost btn-small">Precedent</button>
+            <span id="pageInfo" class="hint">Page 1 / 1</span>
+            <button id="nextPageButton" class="btn btn-ghost btn-small">Suivant</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
+

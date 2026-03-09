@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+data/
+data_test/
+chunk-*.js
+eldorado_main.js
+eldorado_page.html
+Scrapling/
