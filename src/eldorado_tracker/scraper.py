@@ -135,6 +135,87 @@ class EldoradoPriceScraper:
             normalized_rows=all_rows,
         )
 
+    def scrape_selected_pages(
+        self,
+        listing_url: str,
+        page_indexes: list[int],
+        overrides: dict[str, Any] | None = None,
+        fetched_at_utc: str | None = None,
+        progress_callback: Any | None = None,
+    ) -> ScrapeResult:
+        target = parse_listing_target(listing_url)
+        base_params = build_flexible_offers_params(target, overrides)
+        selected_pages = sorted({int(page) for page in page_indexes if int(page) > 0})
+        fetched_at = fetched_at_utc or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        if not selected_pages:
+            return ScrapeResult(
+                fetched_at_utc=fetched_at,
+                listing_target=target,
+                params=base_params,
+                raw_payload={
+                    "mode": "selected_pages",
+                    "pagesRequested": [],
+                    "pagesScraped": 0,
+                    "recordCount": 0,
+                    "totalPagesRaw": 0,
+                },
+                normalized_rows=[],
+            )
+
+        all_rows: list[dict[str, Any]] = []
+        record_count: int | None = None
+        total_pages_raw: int | None = None
+
+        with FetcherSession(impersonate=self.impersonate, timeout=self.timeout) as session:
+            for done, page_index in enumerate(selected_pages, start=1):
+                params = dict(base_params)
+                params["pageIndex"] = str(page_index)
+                payload = self._fetch_payload(session, params)
+
+                if record_count is None:
+                    record_count = int(payload.get("recordCount") or 0)
+                if total_pages_raw is None:
+                    total_pages_raw = int(payload.get("totalPages") or 1)
+
+                rows = normalize_results(
+                    payload=payload,
+                    listing_url=listing_url,
+                    fetched_at_utc=fetched_at,
+                    game_id=str(base_params.get("gameId", target.game_id)),
+                    category=str(base_params.get("category", target.category)),
+                )
+                all_rows.extend(rows)
+
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "page_index": page_index,
+                            "pages_done": done,
+                            "pages_total": len(selected_pages),
+                            "rows_collected": len(all_rows),
+                            "record_count": record_count,
+                        }
+                    )
+
+        summary_payload = {
+            "mode": "selected_pages",
+            "pageIndex": selected_pages[0],
+            "pagesRequested": selected_pages,
+            "pagesScraped": len(selected_pages),
+            "recordCount": record_count or len(all_rows),
+            "totalPagesRaw": total_pages_raw or len(selected_pages),
+            "totalPages": total_pages_raw or len(selected_pages),
+        }
+
+        return ScrapeResult(
+            fetched_at_utc=fetched_at,
+            listing_target=target,
+            params=base_params,
+            raw_payload=summary_payload,
+            normalized_rows=all_rows,
+        )
+
     def _fetch_payload(self, session: FetcherSession, params: dict[str, Any]) -> dict[str, Any]:
         response = session.get(API_BASE_URL, params=params, stealthy_headers=True)
         return response.json()

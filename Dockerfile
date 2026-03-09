@@ -2,10 +2,14 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NODE_ROLE=main \
     DATA_DIR=/app/data \
     LISTING_URL=https://www.eldorado.gg/fr/steal-a-brainrot-brainrots/i/259?lowestPrice=0&highestPrice=50&offerSortingCriterion=Price&isAscending=true&gamePageOfferIndex=1&gamePageOfferSize=50 \
     SCRAPE_IMPERSONATE=chrome \
     SCRAPE_TIMEOUT=30 \
+    SATELLITE_ENABLED=false \
+    SATELLITE_BASE_URL=http://82.67.180.129:30080 \
+    SATELLITE_TIMEOUT=900 \
     HOST=0.0.0.0 \
     PORT=8787
 

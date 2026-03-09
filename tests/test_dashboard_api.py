@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from http.server import ThreadingHTTPServer
 from threading import Thread
+from types import SimpleNamespace
 from urllib import request
 
 import pytest
@@ -38,6 +39,8 @@ def api_server(monkeypatch, tmp_path):
     monkeypatch.setattr(dashboard, "DATA_DIR", data_dir)
     monkeypatch.setattr(dashboard, "LATEST_JSON_PATH", normalized_dir / "latest_offers.json")
     monkeypatch.setattr(dashboard, "HISTORY_CSV_PATH", normalized_dir / "offers_history.csv")
+    monkeypatch.setattr(dashboard, "NODE_ROLE", "main")
+    monkeypatch.setattr(dashboard, "SATELLITE_ENABLED", False)
 
     with dashboard.SCRAPE_STATE_LOCK:
         dashboard.SCRAPE_STATE.clear()
@@ -64,6 +67,7 @@ def test_healthz_returns_200(api_server) -> None:
     assert status == 200
     assert payload["status"] == "ok"
     assert payload["scrape_running"] is False
+    assert payload["node_role"] == "main"
 
 
 def test_scrape_start_returns_202(api_server, monkeypatch) -> None:
@@ -99,3 +103,55 @@ def test_clear_results_rejected_while_running(api_server) -> None:
     status, payload = request_json(f"{api_server}/api/clear-results", method="POST", payload={})
     assert status == 409
     assert payload["status"] == "busy"
+
+
+def test_split_pages_between_nodes() -> None:
+    local_pages, satellite_pages = dashboard.split_pages_between_nodes([2, 3, 4, 5, 6])
+    assert local_pages == [3, 5]
+    assert satellite_pages == [2, 4, 6]
+
+
+def test_satellite_endpoint_rejected_on_main_node(api_server) -> None:
+    status, payload = request_json(
+        f"{api_server}/api/satellite/scrape-pages",
+        method="POST",
+        payload={"page_indexes": [2, 4]},
+    )
+    assert status == 403
+    assert "only available on satellite" in payload["error"]
+
+
+def test_satellite_endpoint_scrapes_pages(api_server, monkeypatch) -> None:
+    monkeypatch.setattr(dashboard, "NODE_ROLE", "satellite")
+
+    class FakeScraper:
+        def __init__(self, impersonate: str, timeout: int) -> None:
+            self.impersonate = impersonate
+            self.timeout = timeout
+
+        def scrape_selected_pages(self, listing_url, page_indexes, overrides):
+            assert listing_url
+            assert page_indexes == [2, 4]
+            assert overrides["lowestPrice"] is None
+            return SimpleNamespace(
+                fetched_at_utc="2026-03-09T12:53:03+00:00",
+                raw_payload={"pagesScraped": 2, "recordCount": 100},
+                normalized_rows=[{"offer_id": "a"}, {"offer_id": "b"}],
+            )
+
+    monkeypatch.setattr(dashboard, "EldoradoPriceScraper", FakeScraper)
+
+    status, payload = request_json(
+        f"{api_server}/api/satellite/scrape-pages",
+        method="POST",
+        payload={
+            "listing_url": "https://www.eldorado.gg/fr/steal-a-brainrot-brainrots/i/259",
+            "page_indexes": [2, 4],
+            "all_prices": True,
+            "overrides": {"highestPrice": "20"},
+        },
+    )
+    assert status == 200
+    assert payload["status"] == "ok"
+    assert payload["pages_scraped"] == 2
+    assert len(payload["normalized_rows"]) == 2

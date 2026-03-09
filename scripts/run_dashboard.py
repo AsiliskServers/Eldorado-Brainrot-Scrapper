@@ -4,12 +4,15 @@ import argparse
 import csv
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +25,11 @@ from eldorado_tracker.settings import (  # noqa: E402
     get_data_dir,
     get_host,
     get_listing_url,
+    get_node_role,
     get_port,
+    get_satellite_base_url,
+    get_satellite_enabled,
+    get_satellite_timeout,
     get_scrape_impersonate,
     get_scrape_timeout,
 )
@@ -32,6 +39,10 @@ from eldorado_tracker.storage import clear_persisted_results, persist_result  # 
 DEFAULT_LISTING_URL = get_listing_url()
 SCRAPE_IMPERSONATE = get_scrape_impersonate()
 SCRAPE_TIMEOUT = get_scrape_timeout()
+NODE_ROLE = get_node_role()
+SATELLITE_BASE_URL = get_satellite_base_url()
+SATELLITE_ENABLED = get_satellite_enabled()
+SATELLITE_TIMEOUT = get_satellite_timeout()
 DATA_DIR = get_data_dir(PROJECT_ROOT)
 DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
 LATEST_JSON_PATH = DATA_DIR / "normalized" / "latest_offers.json"
@@ -100,6 +111,176 @@ def read_history_rows(limit: int = 200) -> list[dict[str, Any]]:
 def get_scrape_state() -> dict[str, Any]:
     with SCRAPE_STATE_LOCK:
         return dict(SCRAPE_STATE)
+
+
+def is_main_node() -> bool:
+    return NODE_ROLE == "main"
+
+
+def split_pages_between_nodes(page_indexes: list[int]) -> tuple[list[int], list[int]]:
+    satellite_pages = page_indexes[::2]
+    local_pages = page_indexes[1::2]
+    return local_pages, satellite_pages
+
+
+def request_satellite_pages(
+    listing_url: str,
+    overrides: dict[str, Any] | None,
+    page_indexes: list[int],
+    all_prices: bool,
+) -> list[dict[str, Any]]:
+    if not page_indexes:
+        return []
+
+    payload = {
+        "listing_url": listing_url,
+        "overrides": overrides or {},
+        "page_indexes": page_indexes,
+        "all_prices": all_prices,
+    }
+    url = f"{SATELLITE_BASE_URL}/api/satellite/scrape-pages"
+    req = urlrequest.Request(
+        url=url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=SATELLITE_TIMEOUT) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Satellite HTTP error {exc.code}: {detail}") from exc
+    except urlerror.URLError as exc:
+        raise RuntimeError(f"Satellite request failed: {exc}") from exc
+
+    if not isinstance(body, dict) or body.get("status") != "ok":
+        raise RuntimeError(f"Satellite invalid response: {body}")
+    rows = body.get("normalized_rows")
+    if not isinstance(rows, list):
+        raise RuntimeError("Satellite response missing normalized_rows")
+    return rows
+
+
+def scrape_all_pages_distributed(
+    scraper: EldoradoPriceScraper,
+    listing_url: str,
+    overrides: dict[str, Any] | None,
+    max_pages: int | None,
+    all_prices: bool,
+    progress_callback: Any | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    first_overrides = dict(overrides or {})
+    first_overrides["pageIndex"] = "1"
+    first_result = scraper.scrape_listing(listing_url=listing_url, overrides=first_overrides)
+
+    total_pages_raw = int(first_result.raw_payload.get("totalPages") or 1)
+    total_pages_effective = min(total_pages_raw, max_pages) if max_pages else total_pages_raw
+    record_count = int(first_result.raw_payload.get("recordCount") or len(first_result.normalized_rows))
+    all_rows = list(first_result.normalized_rows)
+
+    completed_pages = 1
+    local_rows_collected = 0
+    satellite_rows_collected = 0
+    satellite_error: str | None = None
+
+    def emit_progress() -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "current_page": completed_pages,
+                "total_pages": total_pages_effective,
+                "rows_collected": len(first_result.normalized_rows)
+                + local_rows_collected
+                + satellite_rows_collected,
+                "record_count": record_count,
+                "progress_percent": round((completed_pages / max(total_pages_effective, 1)) * 100, 2),
+            }
+        )
+
+    emit_progress()
+    if total_pages_effective <= 1:
+        summary = {
+            "mode": "distributed",
+            "distributed": False,
+            "pageIndex": 1,
+            "totalPages": total_pages_effective,
+            "totalPagesRaw": total_pages_raw,
+            "recordCount": record_count,
+            "pagesScraped": 1,
+            "satellitePages": [],
+            "localPages": [1],
+            "satelliteError": None,
+        }
+        first_result.raw_payload = summary
+        return first_result, summary
+
+    remaining_pages = list(range(2, total_pages_effective + 1))
+    local_pages, satellite_pages = split_pages_between_nodes(remaining_pages)
+
+    def on_local_progress(progress: dict[str, Any]) -> None:
+        nonlocal completed_pages, local_rows_collected
+        local_rows_collected = int(progress.get("rows_collected", 0))
+        completed_pages = 1 + int(progress.get("pages_done", 0))
+        emit_progress()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        local_future = pool.submit(
+            scraper.scrape_selected_pages,
+            listing_url,
+            local_pages,
+            overrides,
+            first_result.fetched_at_utc,
+            on_local_progress,
+        )
+        satellite_future = pool.submit(
+            request_satellite_pages,
+            listing_url,
+            overrides,
+            satellite_pages,
+            all_prices,
+        )
+
+        local_result = local_future.result()
+        all_rows.extend(local_result.normalized_rows)
+
+        try:
+            satellite_rows = satellite_future.result()
+            satellite_rows_collected = len(satellite_rows)
+            all_rows.extend(satellite_rows)
+            completed_pages = 1 + len(local_pages) + len(satellite_pages)
+            emit_progress()
+        except Exception as exc:
+            satellite_error = str(exc)
+            fallback_result = scraper.scrape_selected_pages(
+                listing_url=listing_url,
+                page_indexes=satellite_pages,
+                overrides=overrides,
+                fetched_at_utc=first_result.fetched_at_utc,
+            )
+            satellite_rows_collected = len(fallback_result.normalized_rows)
+            all_rows.extend(fallback_result.normalized_rows)
+            completed_pages = 1 + len(local_pages) + len(satellite_pages)
+            emit_progress()
+
+    summary = {
+        "mode": "distributed",
+        "distributed": True,
+        "pageIndex": 1,
+        "totalPages": total_pages_effective,
+        "totalPagesRaw": total_pages_raw,
+        "recordCount": record_count,
+        "pagesScraped": 1 + len(local_pages) + len(satellite_pages),
+        "satellitePages": satellite_pages,
+        "localPages": [1, *local_pages],
+        "satelliteError": satellite_error,
+    }
+
+    first_result.raw_payload = summary
+    first_result.normalized_rows = all_rows
+    first_result.params["pageIndex"] = "1"
+    return first_result, summary
 
 
 def start_scrape_job(
@@ -175,12 +356,24 @@ def run_scrape_job(
 
     try:
         if all_pages:
-            result = scraper.scrape_all_pages(
-                listing_url=listing_url,
-                overrides=effective_overrides,
-                progress_callback=on_progress,
-                max_pages=max_pages,
-            )
+            if is_main_node() and SATELLITE_ENABLED:
+                result, distributed_summary = scrape_all_pages_distributed(
+                    scraper=scraper,
+                    listing_url=listing_url,
+                    overrides=effective_overrides,
+                    max_pages=max_pages,
+                    all_prices=all_prices,
+                    progress_callback=on_progress,
+                )
+                if distributed_summary.get("satelliteError"):
+                    print(f"[dashboard] satellite fallback triggered: {distributed_summary['satelliteError']}")
+            else:
+                result = scraper.scrape_all_pages(
+                    listing_url=listing_url,
+                    overrides=effective_overrides,
+                    progress_callback=on_progress,
+                    max_pages=max_pages,
+                )
         else:
             result = scraper.scrape_listing(listing_url=listing_url, overrides=effective_overrides)
             on_progress(
@@ -245,6 +438,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if NODE_ROLE == "satellite" and parsed.path in {"/", "/styles.css", "/app.js"}:
+            return self.send_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": "Satellite node does not serve dashboard UI"},
+            )
         if parsed.path == "/":
             return self.serve_file("index.html", "text/html; charset=utf-8")
         if parsed.path == "/styles.css":
@@ -258,6 +456,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "timestamp_utc": utc_iso(),
                     "scrape_running": bool(get_scrape_state().get("running")),
+                    "node_role": NODE_ROLE,
+                    "satellite_enabled": bool(SATELLITE_ENABLED),
+                    "satellite_base_url": SATELLITE_BASE_URL if is_main_node() else None,
                 },
             )
         if parsed.path == "/api/latest":
@@ -276,6 +477,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/satellite/scrape-pages":
+            return self.satellite_scrape_pages()
+
+        if NODE_ROLE == "satellite":
+            return self.send_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": "Satellite node only accepts '/api/satellite/scrape-pages'"},
+            )
+
         if parsed.path == "/api/clear-results":
             return self.clear_results()
         if parsed.path != "/api/scrape":
@@ -311,6 +521,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return self.send_json(
             HTTPStatus.ACCEPTED,
             {"status": "started", "scrape_state": state},
+        )
+
+    def satellite_scrape_pages(self) -> None:
+        if NODE_ROLE != "satellite":
+            self.send_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": "This endpoint is only available on satellite node"},
+            )
+            return
+
+        body = self.read_json_body()
+        listing_url = str(body.get("listing_url") or DEFAULT_LISTING_URL)
+        overrides = body.get("overrides")
+        if overrides is not None and not isinstance(overrides, dict):
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "'overrides' must be an object"})
+            return
+
+        raw_pages = body.get("page_indexes")
+        if not isinstance(raw_pages, list) or not raw_pages:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "'page_indexes' must be a non-empty array"})
+            return
+
+        page_indexes: list[int] = []
+        for value in raw_pages:
+            parsed = parse_int_or_none(value)
+            if parsed is None:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "All page indexes must be positive integers"})
+                return
+            page_indexes.append(parsed)
+
+        all_prices = parse_bool(body.get("all_prices"), True)
+        effective_overrides = dict(overrides or {})
+        if all_prices:
+            effective_overrides["lowestPrice"] = None
+            effective_overrides["highestPrice"] = None
+
+        scraper = EldoradoPriceScraper(impersonate=SCRAPE_IMPERSONATE, timeout=SCRAPE_TIMEOUT)
+        result = scraper.scrape_selected_pages(
+            listing_url=listing_url,
+            page_indexes=page_indexes,
+            overrides=effective_overrides,
+        )
+        self.send_json(
+            HTTPStatus.OK,
+            {
+                "status": "ok",
+                "fetched_at_utc": result.fetched_at_utc,
+                "pages_scraped": result.raw_payload.get("pagesScraped"),
+                "record_count": result.raw_payload.get("recordCount"),
+                "normalized_rows": result.normalized_rows,
+            },
         )
 
     def clear_results(self) -> None:
@@ -412,7 +673,12 @@ def parse_bool(value: Any, default: bool) -> bool:
 
 def run_server(host: str = get_host(), port: int = get_port()) -> None:
     server = ThreadingHTTPServer((host, port), DashboardHandler)
-    print(f"Dashboard running at http://{host}:{port}")
+    print(f"Node role: {NODE_ROLE}")
+    if is_main_node():
+        print(f"Dashboard running at http://{host}:{port}")
+        print(f"Satellite enabled: {SATELLITE_ENABLED} ({SATELLITE_BASE_URL})")
+    else:
+        print(f"Satellite API running at http://{host}:{port}/api/satellite/scrape-pages")
     server.serve_forever()
 
 
