@@ -45,6 +45,9 @@ def api_server(monkeypatch, tmp_path):
     with dashboard.SCRAPE_STATE_LOCK:
         dashboard.SCRAPE_STATE.clear()
         dashboard.SCRAPE_STATE.update(dashboard.build_idle_scrape_state())
+    with dashboard.SATELLITE_TASK_LOCK:
+        dashboard.SATELLITE_TASK_STATE.clear()
+        dashboard.SATELLITE_TASK_STATE.update(dashboard.build_idle_satellite_task_state())
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.DashboardHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -60,6 +63,9 @@ def api_server(monkeypatch, tmp_path):
         with dashboard.SCRAPE_STATE_LOCK:
             dashboard.SCRAPE_STATE.clear()
             dashboard.SCRAPE_STATE.update(dashboard.build_idle_scrape_state())
+        with dashboard.SATELLITE_TASK_LOCK:
+            dashboard.SATELLITE_TASK_STATE.clear()
+            dashboard.SATELLITE_TASK_STATE.update(dashboard.build_idle_satellite_task_state())
 
 
 def test_healthz_returns_200(api_server) -> None:
@@ -135,10 +141,13 @@ def test_satellite_endpoint_scrapes_pages(api_server, monkeypatch) -> None:
             self.impersonate = impersonate
             self.timeout = timeout
 
-        def scrape_selected_pages(self, listing_url, page_indexes, overrides):
+        def scrape_selected_pages(self, listing_url, page_indexes, overrides, progress_callback=None):
             assert listing_url
             assert page_indexes == [2, 4]
             assert overrides["lowestPrice"] is None
+            if progress_callback:
+                progress_callback({"pages_done": 1})
+                progress_callback({"pages_done": 2})
             return SimpleNamespace(
                 fetched_at_utc="2026-03-09T12:53:03+00:00",
                 raw_payload={"pagesScraped": 2, "recordCount": 100},
@@ -161,6 +170,12 @@ def test_satellite_endpoint_scrapes_pages(api_server, monkeypatch) -> None:
     assert payload["status"] == "ok"
     assert payload["pages_scraped"] == 2
     assert len(payload["normalized_rows"]) == 2
+
+    status_health, payload_health = request_json(f"{api_server}/api/healthz")
+    assert status_health == 200
+    assert payload_health["node_role"] == "satellite"
+    assert payload_health["satellite_task"]["pages_total"] == 2
+    assert payload_health["satellite_task"]["pages_done"] == 2
 
 
 def test_prefixed_static_file_served(api_server) -> None:

@@ -5,7 +5,7 @@ import csv
 import json
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +50,7 @@ LATEST_JSON_PATH = DATA_DIR / "normalized" / "latest_offers.json"
 HISTORY_CSV_PATH = DATA_DIR / "normalized" / "offers_history.csv"
 SCRAPE_STATE_LOCK = Lock()
 SATELLITE_STATUS_LOCK = Lock()
+SATELLITE_TASK_LOCK = Lock()
 SATELLITE_STATUS_CACHE: dict[str, Any] = {"checked_at_monotonic": 0.0, "value": None}
 
 
@@ -76,6 +77,20 @@ def build_idle_scrape_state(clear_summary: dict[str, int] | None = None) -> dict
 
 
 SCRAPE_STATE: dict[str, Any] = build_idle_scrape_state()
+
+
+def build_idle_satellite_task_state() -> dict[str, Any]:
+    return {
+        "running": False,
+        "pages_total": 0,
+        "pages_done": 0,
+        "started_at_utc": None,
+        "finished_at_utc": None,
+        "error": None,
+    }
+
+
+SATELLITE_TASK_STATE: dict[str, Any] = build_idle_satellite_task_state()
 
 
 def load_latest_rows() -> list[dict[str, Any]]:
@@ -122,6 +137,8 @@ def build_satellite_runtime_status(force_refresh: bool = False) -> dict[str, Any
             "configured_url": None,
             "ok": None,
             "working": None,
+            "pages_total": 0,
+            "pages_done": 0,
             "error": None,
             "checked_at_utc": utc_iso(),
         }
@@ -131,6 +148,8 @@ def build_satellite_runtime_status(force_refresh: bool = False) -> dict[str, Any
             "configured_url": SATELLITE_BASE_URL,
             "ok": False,
             "working": False,
+            "pages_total": 0,
+            "pages_done": 0,
             "error": "disabled",
             "checked_at_utc": utc_iso(),
         }
@@ -148,11 +167,14 @@ def build_satellite_runtime_status(force_refresh: bool = False) -> dict[str, Any
     try:
         with urlrequest.urlopen(req, timeout=3) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        satellite_task = payload.get("satellite_task") if isinstance(payload, dict) else None
         result = {
             "enabled": True,
             "configured_url": SATELLITE_BASE_URL,
             "ok": bool(payload.get("status") == "ok"),
             "working": bool(payload.get("scrape_running")),
+            "pages_total": int((satellite_task or {}).get("pages_total") or 0),
+            "pages_done": int((satellite_task or {}).get("pages_done") or 0),
             "error": None,
             "checked_at_utc": utc_iso(),
         }
@@ -162,6 +184,8 @@ def build_satellite_runtime_status(force_refresh: bool = False) -> dict[str, Any
             "configured_url": SATELLITE_BASE_URL,
             "ok": False,
             "working": False,
+            "pages_total": 0,
+            "pages_done": 0,
             "error": str(exc),
             "checked_at_utc": utc_iso(),
         }
@@ -177,6 +201,42 @@ def get_scrape_state(force_satellite_refresh: bool = False) -> dict[str, Any]:
         state = dict(SCRAPE_STATE)
     state["satellite_runtime"] = build_satellite_runtime_status(force_refresh=force_satellite_refresh)
     return state
+
+
+def get_satellite_task_state() -> dict[str, Any]:
+    with SATELLITE_TASK_LOCK:
+        return dict(SATELLITE_TASK_STATE)
+
+
+def start_satellite_task(pages_total: int) -> None:
+    with SATELLITE_TASK_LOCK:
+        SATELLITE_TASK_STATE.update(
+            {
+                "running": True,
+                "pages_total": max(0, int(pages_total)),
+                "pages_done": 0,
+                "started_at_utc": utc_iso(),
+                "finished_at_utc": None,
+                "error": None,
+            }
+        )
+
+
+def update_satellite_task_progress(pages_done: int) -> None:
+    with SATELLITE_TASK_LOCK:
+        total = int(SATELLITE_TASK_STATE.get("pages_total") or 0)
+        SATELLITE_TASK_STATE["pages_done"] = min(max(0, int(pages_done)), total)
+
+
+def finish_satellite_task(error: str | None = None) -> None:
+    with SATELLITE_TASK_LOCK:
+        SATELLITE_TASK_STATE.update(
+            {
+                "running": False,
+                "finished_at_utc": utc_iso(),
+                "error": error,
+            }
+        )
 
 
 def is_main_node() -> bool:
@@ -245,7 +305,7 @@ def scrape_all_pages_distributed(
     record_count = int(first_result.raw_payload.get("recordCount") or len(first_result.normalized_rows))
     all_rows = list(first_result.normalized_rows)
 
-    completed_pages = 1
+    local_completed_pages = 0
     local_rows_collected = 0
     satellite_rows_collected = 0
     satellite_assigned_pages = 0
@@ -256,6 +316,7 @@ def scrape_all_pages_distributed(
     def emit_progress() -> None:
         if progress_callback is None:
             return
+        completed_pages = min(total_pages_effective, 1 + local_completed_pages + satellite_completed_pages)
         progress_callback(
             {
                 "current_page": completed_pages,
@@ -296,9 +357,9 @@ def scrape_all_pages_distributed(
     emit_progress()
 
     def on_local_progress(progress: dict[str, Any]) -> None:
-        nonlocal completed_pages, local_rows_collected
+        nonlocal local_completed_pages, local_rows_collected
         local_rows_collected = int(progress.get("rows_collected", 0))
-        completed_pages = 1 + int(progress.get("pages_done", 0))
+        local_completed_pages = int(progress.get("pages_done", 0))
         emit_progress()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -318,6 +379,19 @@ def scrape_all_pages_distributed(
             all_prices,
         )
 
+        while not (local_future.done() and satellite_future.done()):
+            wait([local_future, satellite_future], timeout=1)
+            if satellite_assigned_pages > 0 and not satellite_future.done():
+                runtime = build_satellite_runtime_status(force_refresh=True)
+                satellite_working = bool(runtime.get("working"))
+                satellite_completed_pages = min(
+                    satellite_assigned_pages,
+                    int(runtime.get("pages_done") or 0),
+                )
+                if runtime.get("error"):
+                    satellite_error = str(runtime.get("error"))
+                emit_progress()
+
         local_result = local_future.result()
         all_rows.extend(local_result.normalized_rows)
 
@@ -327,7 +401,6 @@ def scrape_all_pages_distributed(
             satellite_completed_pages = len(satellite_pages)
             satellite_working = False
             all_rows.extend(satellite_rows)
-            completed_pages = 1 + len(local_pages) + len(satellite_pages)
             emit_progress()
         except Exception as exc:
             satellite_error = str(exc)
@@ -341,7 +414,6 @@ def scrape_all_pages_distributed(
             satellite_completed_pages = len(satellite_pages)
             satellite_working = False
             all_rows.extend(fallback_result.normalized_rows)
-            completed_pages = 1 + len(local_pages) + len(satellite_pages)
             emit_progress()
 
     summary = {
@@ -559,15 +631,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path_matches(path, "/app.js"):
             return self.serve_file("app.js", "application/javascript; charset=utf-8")
         if path_matches(path, "/api/healthz"):
+            satellite_task = get_satellite_task_state() if NODE_ROLE == "satellite" else None
             return self.send_json(
                 HTTPStatus.OK,
                 {
                     "status": "ok",
                     "timestamp_utc": utc_iso(),
-                    "scrape_running": bool(get_scrape_state().get("running")),
+                    "scrape_running": bool(satellite_task.get("running")) if satellite_task else bool(get_scrape_state().get("running")),
                     "node_role": NODE_ROLE,
                     "satellite_enabled": bool(SATELLITE_ENABLED),
                     "satellite_base_url": SATELLITE_BASE_URL if is_main_node() else None,
+                    "satellite_task": satellite_task,
                 },
             )
         if path_matches(path, "/api/latest"):
@@ -641,6 +715,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
 
+        with SATELLITE_TASK_LOCK:
+            if SATELLITE_TASK_STATE.get("running"):
+                self.send_json(
+                    HTTPStatus.CONFLICT,
+                    {"error": "Satellite is already scraping pages"},
+                )
+                return
+
         body = self.read_json_body()
         listing_url = str(body.get("listing_url") or DEFAULT_LISTING_URL)
         overrides = body.get("overrides")
@@ -667,22 +749,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             effective_overrides["lowestPrice"] = None
             effective_overrides["highestPrice"] = None
 
-        scraper = EldoradoPriceScraper(impersonate=SCRAPE_IMPERSONATE, timeout=SCRAPE_TIMEOUT)
-        result = scraper.scrape_selected_pages(
-            listing_url=listing_url,
-            page_indexes=page_indexes,
-            overrides=effective_overrides,
-        )
-        self.send_json(
-            HTTPStatus.OK,
-            {
-                "status": "ok",
-                "fetched_at_utc": result.fetched_at_utc,
-                "pages_scraped": result.raw_payload.get("pagesScraped"),
-                "record_count": result.raw_payload.get("recordCount"),
-                "normalized_rows": result.normalized_rows,
-            },
-        )
+        start_satellite_task(len(page_indexes))
+
+        def on_progress(progress: dict[str, Any]) -> None:
+            update_satellite_task_progress(int(progress.get("pages_done") or 0))
+
+        try:
+            scraper = EldoradoPriceScraper(impersonate=SCRAPE_IMPERSONATE, timeout=SCRAPE_TIMEOUT)
+            result = scraper.scrape_selected_pages(
+                listing_url=listing_url,
+                page_indexes=page_indexes,
+                overrides=effective_overrides,
+                progress_callback=on_progress,
+            )
+            update_satellite_task_progress(len(page_indexes))
+            finish_satellite_task()
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "status": "ok",
+                    "fetched_at_utc": result.fetched_at_utc,
+                    "pages_scraped": result.raw_payload.get("pagesScraped"),
+                    "record_count": result.raw_payload.get("recordCount"),
+                    "normalized_rows": result.normalized_rows,
+                },
+            )
+        except Exception as exc:
+            finish_satellite_task(error=str(exc))
+            self.send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"status": "error", "error": str(exc)},
+            )
 
     def clear_results(self) -> None:
         with SCRAPE_STATE_LOCK:

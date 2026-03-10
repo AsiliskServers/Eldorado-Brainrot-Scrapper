@@ -378,16 +378,28 @@ function renderScrapeState() {
   const satelliteEnabled = Boolean(runtime.enabled);
   const satelliteOk = runtime.ok === true;
   const satelliteWorking = Boolean(scrape.satellite_working) || Boolean(runtime.working);
-  const assignedPages = Number(scrape.satellite_assigned_pages || 0);
-  const completedPages = Number(scrape.satellite_completed_pages || 0);
+  const assignedFromState = Number(scrape.satellite_assigned_pages || 0);
+  const assignedFromRuntime = Number(runtime.pages_total || 0);
+  const completedFromState = Number(scrape.satellite_completed_pages || 0);
+  const completedFromRuntime = Number(runtime.pages_done || 0);
+  const assignedPages = Math.max(
+    Number.isFinite(assignedFromState) ? assignedFromState : 0,
+    Number.isFinite(assignedFromRuntime) ? assignedFromRuntime : 0
+  );
+  const completedPages = Math.max(
+    Number.isFinite(completedFromState) ? completedFromState : 0,
+    Number.isFinite(completedFromRuntime) ? completedFromRuntime : 0
+  );
 
   if (!satelliteEnabled) {
     setSatelliteBadge("Desactive", false);
     refs.satelliteStatusText.textContent = "Satellite desactive sur ce noeud.";
   } else if (satelliteOk) {
     setSatelliteBadge("OK", true);
-    if (satelliteWorking) {
+    if (satelliteWorking && assignedPages > 0) {
       refs.satelliteStatusText.textContent = `Le satellite travaille (${completedPages}/${assignedPages} pages).`;
+    } else if (satelliteWorking) {
+      refs.satelliteStatusText.textContent = "Le satellite travaille.";
     } else {
       refs.satelliteStatusText.textContent = `Satellite joignable et au repos (${completedPages}/${assignedPages} pages au dernier job).`;
     }
