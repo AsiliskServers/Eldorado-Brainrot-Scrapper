@@ -538,18 +538,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if NODE_ROLE == "satellite" and parsed.path in {"/", "/styles.css", "/app.js"}:
+        path = parsed.path
+        if path_matches(path, "/favicon.ico"):
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+            return
+
+        if NODE_ROLE == "satellite" and (
+            is_index_like_path(path) or path_matches(path, "/styles.css") or path_matches(path, "/app.js")
+        ):
             return self.send_json(
                 HTTPStatus.FORBIDDEN,
                 {"error": "Satellite node does not serve dashboard UI"},
             )
-        if parsed.path == "/":
+
+        if is_index_like_path(path):
             return self.serve_file("index.html", "text/html; charset=utf-8")
-        if parsed.path == "/styles.css":
+        if path_matches(path, "/styles.css"):
             return self.serve_file("styles.css", "text/css; charset=utf-8")
-        if parsed.path == "/app.js":
+        if path_matches(path, "/app.js"):
             return self.serve_file("app.js", "application/javascript; charset=utf-8")
-        if parsed.path == "/api/healthz":
+        if path_matches(path, "/api/healthz"):
             return self.send_json(
                 HTTPStatus.OK,
                 {
@@ -561,23 +570,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "satellite_base_url": SATELLITE_BASE_URL if is_main_node() else None,
                 },
             )
-        if parsed.path == "/api/latest":
+        if path_matches(path, "/api/latest"):
             payload = build_latest_payload()
             payload["scrape_state"] = get_scrape_state(force_satellite_refresh=True)
             return self.send_json(HTTPStatus.OK, payload)
-        if parsed.path == "/api/history":
+        if path_matches(path, "/api/history"):
             query = parse_qs(parsed.query)
             limit = parse_int(query.get("limit", ["200"])[0], 200)
             rows = read_history_rows(limit=max(1, min(limit, 5000)))
             return self.send_json(HTTPStatus.OK, {"limit": limit, "row_count": len(rows), "rows": rows})
-        if parsed.path == "/api/scrape-status":
+        if path_matches(path, "/api/scrape-status"):
             return self.send_json(HTTPStatus.OK, get_scrape_state(force_satellite_refresh=True))
 
         return self.send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == "/api/satellite/scrape-pages":
+        path = parsed.path
+        if path_matches(path, "/api/satellite/scrape-pages"):
             return self.satellite_scrape_pages()
 
         if NODE_ROLE == "satellite":
@@ -586,9 +596,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"error": "Satellite node only accepts '/api/satellite/scrape-pages'"},
             )
 
-        if parsed.path == "/api/clear-results":
+        if path_matches(path, "/api/clear-results"):
             return self.clear_results()
-        if parsed.path != "/api/scrape":
+        if not path_matches(path, "/api/scrape"):
             return self.send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
         body = self.read_json_body()
@@ -769,6 +779,23 @@ def parse_bool(value: Any, default: bool) -> bool:
         if normalized in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+def path_matches(path: str, target: str) -> bool:
+    return path == target or path.endswith(target)
+
+
+def is_index_like_path(path: str) -> bool:
+    if path in {"", "/"}:
+        return True
+    stripped = path.strip("/")
+    if not stripped:
+        return True
+    if "/" in stripped:
+        return False
+    if "." in stripped:
+        return False
+    return not stripped.startswith("api")
 
 
 def run_server(host: str = get_host(), port: int = get_port()) -> None:

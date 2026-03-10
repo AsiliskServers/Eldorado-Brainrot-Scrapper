@@ -70,6 +70,12 @@ def test_healthz_returns_200(api_server) -> None:
     assert payload["node_role"] == "main"
 
 
+def test_prefixed_healthz_returns_200(api_server) -> None:
+    status, payload = request_json(f"{api_server}/scrapper/api/healthz")
+    assert status == 200
+    assert payload["status"] == "ok"
+
+
 def test_scrape_start_returns_202(api_server, monkeypatch) -> None:
     expected_state = {"running": True, "job_id": "job-1"}
 
@@ -155,3 +161,11 @@ def test_satellite_endpoint_scrapes_pages(api_server, monkeypatch) -> None:
     assert payload["status"] == "ok"
     assert payload["pages_scraped"] == 2
     assert len(payload["normalized_rows"]) == 2
+
+
+def test_prefixed_static_file_served(api_server) -> None:
+    req = request.Request(f"{api_server}/scrapper/styles.css", method="GET")
+    with request.urlopen(req, timeout=5) as response:
+        body = response.read().decode("utf-8")
+        assert response.status == 200
+        assert ":root" in body

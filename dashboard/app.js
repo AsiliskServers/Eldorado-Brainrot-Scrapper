@@ -414,7 +414,7 @@ function renderScrapeState() {
 }
 
 async function fetchLatest({ notifyOnChange = false } = {}) {
-  const payload = await requestJSON("/api/latest");
+  const payload = await requestJSON("api/latest");
   const changed = payload.updated_at_utc && payload.updated_at_utc !== state.latestStamp;
 
   state.latestStamp = payload.updated_at_utc || null;
@@ -430,7 +430,7 @@ async function fetchLatest({ notifyOnChange = false } = {}) {
 }
 
 async function fetchScrapeStatus() {
-  state.scrapeState = await requestJSON("/api/scrape-status");
+  state.scrapeState = await requestJSON("api/scrape-status");
   renderScrapeState();
 }
 
@@ -449,7 +449,7 @@ async function runScrape() {
   renderOffers();
 
   try {
-    await requestJSON("/api/scrape", {
+    await requestJSON("api/scrape", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ all_pages: true, all_prices: true }),
@@ -471,7 +471,7 @@ async function clearResults() {
 
   refs.clearButton.disabled = true;
   try {
-    await requestJSON("/api/clear-results", {
+    await requestJSON("api/clear-results", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
