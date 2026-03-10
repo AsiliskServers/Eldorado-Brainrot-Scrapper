@@ -4,6 +4,7 @@
   search: "",
   pageSize: 100,
   currentPage: 1,
+  pageSelectTotalPages: 0,
   scrapeState: null,
   previousRunning: false,
   filters: {
@@ -25,6 +26,7 @@ const PRICE_FILTERS = [
 const refs = {
   scrapeButton: document.getElementById("scrapeButton"),
   clearButton: document.getElementById("clearButton"),
+  listingOverviewButton: document.getElementById("listingOverviewButton"),
   refreshButton: document.getElementById("refreshButton"),
   searchInput: document.getElementById("searchInput"),
   raritySelect: document.getElementById("raritySelect"),
@@ -35,6 +37,7 @@ const refs = {
   sortSpeedText: document.getElementById("sortSpeedText"),
   prevPageButton: document.getElementById("prevPageButton"),
   nextPageButton: document.getElementById("nextPageButton"),
+  pageSelect: document.getElementById("pageSelect"),
   pageInfo: document.getElementById("pageInfo"),
   offersRange: document.getElementById("offersRange"),
   lastUpdate: document.getElementById("lastUpdate"),
@@ -56,6 +59,7 @@ const SORT_CONTROLS = [
   { field: "quantity", label: "Quantite", ref: refs.sortQuantityText },
   { field: "speed", label: "Vitesse", ref: refs.sortSpeedText },
 ];
+const LISTING_OVERVIEW_BUTTON_LABEL = "Pages max";
 
 async function requestJSON(url, options = {}) {
   const response = await fetch(url, options);
@@ -76,6 +80,12 @@ function decimal(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return "-";
   return amount.toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+}
+
+function integer(value, fallback = "?") {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return fallback;
+  return Math.trunc(amount).toLocaleString("fr-FR");
 }
 
 function showToast(message, timeoutMs = 2400) {
@@ -227,6 +237,18 @@ function renderOffers() {
   refs.pageInfo.textContent = `Page ${state.currentPage} / ${totalPages} (${state.pageSize}/page)`;
   refs.prevPageButton.disabled = state.currentPage <= 1;
   refs.nextPageButton.disabled = state.currentPage >= totalPages;
+  if (refs.pageSelect) {
+    if (state.pageSelectTotalPages !== totalPages) {
+      const options = [];
+      for (let pageIndex = 1; pageIndex <= totalPages; pageIndex += 1) {
+        options.push(`<option value="${pageIndex}">Page ${pageIndex}</option>`);
+      }
+      refs.pageSelect.innerHTML = options.join("");
+      state.pageSelectTotalPages = totalPages;
+    }
+    refs.pageSelect.value = String(state.currentPage);
+    refs.pageSelect.disabled = totalPages <= 1;
+  }
 
   refs.offersTbody.innerHTML = pageRows
     .map((row) => {
@@ -333,6 +355,7 @@ function resetRowsState() {
   state.rows = [];
   state.latestStamp = null;
   state.currentPage = 1;
+  state.pageSelectTotalPages = 0;
   state.filters = { rarity: "all", speed: "all", price: "all" };
   state.sorts = [];
 }
@@ -502,6 +525,14 @@ async function clearResults() {
   }
 }
 
+async function fetchListingOverview() {
+  const payload = await requestJSON("api/listing-overview");
+  const maxPages = integer(payload.max_pages);
+  const announcementCount = integer(payload.announcement_count);
+  const fetchedAt = payload.fetched_at_utc ? ` (maj ${formatDate(payload.fetched_at_utc)})` : "";
+  showToast(`${maxPages} pages max, ${announcementCount} annonces${fetchedAt}`, 5200);
+}
+
 function bindFilterSelect(ref, key) {
   ref.addEventListener("change", () => {
     state.filters[key] = ref.value || "all";
@@ -513,10 +544,29 @@ function bindFilterSelect(ref, key) {
 function bindEvents() {
   refs.scrapeButton.addEventListener("click", runScrape);
   refs.clearButton.addEventListener("click", clearResults);
+  refs.listingOverviewButton.addEventListener("click", async () => {
+    refs.listingOverviewButton.disabled = true;
+    refs.listingOverviewButton.textContent = "Chargement...";
+    try {
+      await fetchListingOverview();
+    } catch (error) {
+      showToast(`Erreur: ${error.message}`, 3600);
+    } finally {
+      refs.listingOverviewButton.disabled = false;
+      refs.listingOverviewButton.textContent = LISTING_OVERVIEW_BUTTON_LABEL;
+    }
+  });
 
   refs.prevPageButton.addEventListener("click", () => {
     if (state.currentPage <= 1) return;
     state.currentPage -= 1;
+    renderOffers();
+  });
+
+  refs.pageSelect.addEventListener("change", () => {
+    const selected = Number(refs.pageSelect.value);
+    if (!Number.isFinite(selected) || selected <= 0) return;
+    state.currentPage = selected;
     renderOffers();
   });
 

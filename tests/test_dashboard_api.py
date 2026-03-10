@@ -119,8 +119,34 @@ def test_clear_results_rejected_while_running(api_server) -> None:
 
 def test_split_pages_between_nodes() -> None:
     local_pages, satellite_pages = dashboard.split_pages_between_nodes([2, 3, 4, 5, 6])
-    assert local_pages == [3, 5]
-    assert satellite_pages == [2, 4, 6]
+    assert local_pages == [5, 6]
+    assert satellite_pages == [2, 3, 4]
+
+
+def test_listing_overview_returns_counts(api_server, monkeypatch) -> None:
+    class FakeScraper:
+        def __init__(self, impersonate: str, timeout: int) -> None:
+            self.impersonate = impersonate
+            self.timeout = timeout
+
+        def scrape_listing(self, listing_url, overrides):
+            assert listing_url
+            assert overrides["pageIndex"] == "1"
+            assert overrides["lowestPrice"] is None
+            assert overrides["highestPrice"] is None
+            return SimpleNamespace(
+                fetched_at_utc="2026-03-10T12:00:00+00:00",
+                raw_payload={"totalPages": 985, "recordCount": 123456},
+                normalized_rows=[{"offer_id": "a"}],
+            )
+
+    monkeypatch.setattr(dashboard, "EldoradoPriceScraper", FakeScraper)
+
+    status, payload = request_json(f"{api_server}/api/listing-overview")
+    assert status == 200
+    assert payload["max_pages"] == 985
+    assert payload["announcement_count"] == 123456
+    assert payload["all_prices"] is True
 
 
 def test_satellite_endpoint_rejected_on_main_node(api_server) -> None:

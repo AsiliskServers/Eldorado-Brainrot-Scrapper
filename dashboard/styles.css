@@ -375,6 +375,16 @@ tbody tr:hover {
   gap: 8px;
 }
 
+.page-select {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 0.83rem;
+  min-width: 120px;
+}
+
 .pill {
   display: inline-block;
   border-radius: 999px;

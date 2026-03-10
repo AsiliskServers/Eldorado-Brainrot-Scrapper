@@ -119,6 +119,34 @@ def build_latest_payload() -> dict[str, Any]:
     }
 
 
+def build_listing_overview(
+    listing_url: str = DEFAULT_LISTING_URL,
+    overrides: dict[str, Any] | None = None,
+    all_prices: bool = True,
+) -> dict[str, Any]:
+    effective_overrides = dict(overrides or {})
+    if all_prices:
+        effective_overrides["lowestPrice"] = None
+        effective_overrides["highestPrice"] = None
+    effective_overrides["pageIndex"] = "1"
+
+    scraper = EldoradoPriceScraper(impersonate=SCRAPE_IMPERSONATE, timeout=SCRAPE_TIMEOUT)
+    result = scraper.scrape_listing(listing_url=listing_url, overrides=effective_overrides)
+    payload = result.raw_payload if isinstance(result.raw_payload, dict) else {}
+    max_pages = parse_int_or_none(payload.get("totalPages")) or 1
+    announcement_count = parse_int_or_none(payload.get("recordCount")) or len(result.normalized_rows)
+
+    return {
+        "listing_url": listing_url,
+        "max_pages": max_pages,
+        "announcement_count": announcement_count,
+        "total_pages": max_pages,
+        "record_count": announcement_count,
+        "all_prices": bool(all_prices),
+        "fetched_at_utc": result.fetched_at_utc,
+    }
+
+
 def read_history_rows(limit: int = 200) -> list[dict[str, Any]]:
     if not HISTORY_CSV_PATH.exists():
         return []
@@ -244,8 +272,10 @@ def is_main_node() -> bool:
 
 
 def split_pages_between_nodes(page_indexes: list[int]) -> tuple[list[int], list[int]]:
-    satellite_pages = page_indexes[::2]
-    local_pages = page_indexes[1::2]
+    valid_pages = sorted({parsed for page in page_indexes if (parsed := parse_int_or_none(page)) is not None})
+    satellite_count = (len(valid_pages) + 1) // 2
+    satellite_pages = valid_pages[:satellite_count]
+    local_pages = valid_pages[satellite_count:]
     return local_pages, satellite_pages
 
 
@@ -655,6 +685,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self.send_json(HTTPStatus.OK, {"limit": limit, "row_count": len(rows), "rows": rows})
         if path_matches(path, "/api/scrape-status"):
             return self.send_json(HTTPStatus.OK, get_scrape_state(force_satellite_refresh=True))
+        if path_matches(path, "/api/listing-overview"):
+            query = parse_qs(parsed.query)
+            listing_url = str(query.get("listing_url", [DEFAULT_LISTING_URL])[0] or DEFAULT_LISTING_URL)
+            all_prices = parse_bool(query.get("all_prices", ["true"])[0], True)
+            try:
+                payload = build_listing_overview(listing_url=listing_url, all_prices=all_prices)
+            except Exception as exc:
+                return self.send_json(
+                    HTTPStatus.BAD_GATEWAY,
+                    {"error": f"Failed to fetch listing overview: {exc}"},
+                )
+            return self.send_json(HTTPStatus.OK, payload)
 
         return self.send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
